@@ -1,0 +1,11 @@
+{
+  "name": "leetcode-sync",
+  "private": true,
+  "scripts": {
+    "build": "tsc -p extension/tsconfig.json",
+    "typecheck": "tsc -p extension/tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2"
+  }
+}

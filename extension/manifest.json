@@ -1,0 +1,29 @@
+{
+  "manifest_version": 3,
+  "name": "LeetCode → GitHub Sync",
+  "version": "1.0.0",
+  "description": "Sync accepted LeetCode submissions to a GitHub repository shortly after submission.",
+  "permissions": ["storage", "activeTab"],
+  "host_permissions": ["https://leetcode.com/*", "https://api.github.com/*"],
+  "background": {
+    "service_worker": "dist/background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "LeetCode → GitHub Sync",
+    "default_popup": "options.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://leetcode.com/problems/*"],
+      "js": ["dist/content.js"],
+      "run_at": "document_start"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["dist/page-bridge.js"],
+      "matches": ["https://leetcode.com/*"]
+    }
+  ]
+}

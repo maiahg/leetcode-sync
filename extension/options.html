@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>LeetCode → GitHub Sync</title>
+    <style>
+      body { font: 14px system-ui, sans-serif; min-width: 340px; padding: 16px; }
+      label { display: block; margin: 10px 0 4px; font-weight: 600; }
+      input { box-sizing: border-box; padding: 7px; width: 100%; }
+      button { margin-top: 16px; padding: 8px 12px; }
+      small { color: #555; display: block; margin-top: 12px; }
+      #status { margin-top: 10px; }
+    </style>
+  </head>
+  <body>
+    <h2>LeetCode → GitHub</h2>
+    <label for="repository">Repository</label>
+    <input id="repository" placeholder="owner/repository" autocomplete="off">
+    <label for="githubToken">GitHub fine-grained token</label>
+    <input id="githubToken" type="password" placeholder="Contents: Read and write" autocomplete="off">
+    <label for="branch">Branch</label>
+    <input id="branch" value="main">
+    <label for="root">Folder</label>
+    <input id="root" value="problems">
+    <button id="save">Save settings</button>
+    <button id="syncHistory">Sync existing accepted submissions</button>
+    <div id="status" role="status"></div>
+    <small>The token is stored locally in this browser. It is never sent anywhere except api.github.com.</small>
+    <script src="dist/options.js"></script>
+  </body>
+</html>
