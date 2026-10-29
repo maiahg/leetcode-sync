@@ -219,14 +219,30 @@ async function syncSubmission(detail: SyncDetail, writeIndex = true): Promise<Sy
   const listing = await githubRequest<Array<{ name?: string }>>(
     config, `/contents/${encodePath(directory)}?ref=${encodeURIComponent(config.branch)}`
   );
-  const remoteNames = (listing || []).map((item) => `${directory}/${item.name || ""}`);
-  const number = nextSolutionNumber(index, directory, remoteNames).toString().padStart(3, "0");
   const language = String(detail.language || "text").toLowerCase();
   const label = languageLabel(language);
   const extension = EXTENSIONS[language] || "txt";
-  const path = `${directory}/solution-${number}-${label}.${extension}`;
+  const remoteNames = (listing || []).map((item) => `${directory}/${item.name || ""}`);
+  let number = nextSolutionNumber(index, directory, remoteNames);
+  let path = "";
+  while (true) {
+    const candidate = `${directory}/solution-${number.toString().padStart(3, "0")}-${label}.${extension}`;
+    // The directory listing and sync index can both lag behind a previous upload.
+    // Check the exact candidate before writing so a retry never overwrites it.
+    if (!reservedPaths.has(candidate) && !(await getFile(config, candidate))) {
+      path = candidate;
+      break;
+    }
+    number += 1;
+  }
 
-  await putFile(config, path, detail.code, `Add accepted LeetCode solution: ${detail.slug || "problem"}`);
+  reservedPaths.add(path);
+  try {
+    await putFile(config, path, detail.code, `Add accepted LeetCode solution: ${detail.slug || "problem"}`);
+  } catch (error) {
+    reservedPaths.delete(path);
+    throw error;
+  }
   await ensureProblemReadme(config, detail);
   const entry: SyncIndexEntry = {
     path,
@@ -259,6 +275,7 @@ let historySaved = 0;
 let historyFailed = false;
 let historyStartedAt = "";
 let historyEntries: NewIndexEntry[] = [];
+const reservedPaths = new Set<string>();
 
 function enqueue(detail: SyncDetail, isHistory = false): void {
   syncQueue = syncQueue.then(() => syncSubmission(detail, !isHistory)).then((result) => {
