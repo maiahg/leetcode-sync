@@ -1,4 +1,4 @@
-type MonacoModel = { getValue?: () => string };
+type MonacoModel = { getValue?: () => string; getLanguageId?: () => string };
 type MonacoGlobal = { editor?: { getModels?: () => MonacoModel[] } };
 type SubmissionRequestInfo = { isSubmit: boolean; isStatus: boolean; variables: Record<string, any> };
 type QuestionData = { questionId?: string; title?: string; titleSlug?: string; content?: string; difficulty?: string };
@@ -29,6 +29,31 @@ type HistoryOptions = { since?: string | null; knownSubmissionIds?: string[] };
     );
     if (textarea?.value) return textarea.value;
     return document.querySelector<HTMLElement>(".monaco-editor .view-lines")?.innerText || "";
+  }
+
+  function languageValue(value: unknown): string {
+    if (value && typeof value === "object") {
+      const language = value as { name?: unknown; slug?: unknown; value?: unknown };
+      value = language.name || language.slug || language.value;
+    }
+    return String(value || "").trim();
+  }
+
+  function languageKey(value: unknown): string {
+    const language = languageValue(value).toLowerCase();
+    return language === "python3" ? "python" : language;
+  }
+
+  function editorLanguage(): string {
+    try {
+      const models = pageWindow.monaco?.editor?.getModels?.() || [];
+      const model = models.find((candidate) => candidate.getValue?.());
+      const language = model?.getLanguageId?.();
+      if (language) return language;
+    } catch (_) { /* Monaco is not available on every editor version. */ }
+    const element = document.querySelector<HTMLElement>("[data-mode-id], [data-language], [data-lang]");
+    return element?.getAttribute("data-mode-id") || element?.getAttribute("data-language") ||
+      element?.getAttribute("data-lang") || "";
   }
 
   function parseRequestBody(body: unknown): Record<string, any> | null {
@@ -134,7 +159,7 @@ type HistoryOptions = { since?: string | null; knownSubmissionIds?: string[] };
             slug: question.titleSlug || row.titleSlug || location.pathname.split("/")[2] || "untitled",
             description: question.content || "",
             difficulty: question.difficulty || "",
-            language: detail.lang?.name || detail.lang || row.lang || "text", code: detail.code,
+            language: languageValue(detail.lang?.name || detail.lang || row.lang) || editorLanguage() || "text", code: detail.code,
             status: detail.statusDisplay || row.statusDisplay || "Accepted",
             timestamp: String(detail.timestamp || row.timestamp || ""),
             runtime: detail.runtime || row.runtime || "", memory: detail.memory || row.memory || "",
@@ -159,10 +184,14 @@ type HistoryOptions = { since?: string | null; knownSubmissionIds?: string[] };
     pendingSubmission = {
       code: String(variables.code || editorCode()), questionId: String(variables.questionId || ""),
       slug,
-      language: String(variables.lang || variables.language || "text"), submissionId: String(variables.submissionId || "")
+      language: languageValue(variables.lang || variables.language || variables.langSlug) || editorLanguage() || "text",
+      submissionId: String(variables.submissionId || "")
     };
     void loadQuestion(slug);
   }
+
+  let lastAcceptedFingerprint = "";
+  let lastAcceptedAt = 0;
 
   async function acceptedDetail(payload: any, info: SubmissionRequestInfo): Promise<void> {
     const data = payload?.data || {};
@@ -176,17 +205,22 @@ type HistoryOptions = { since?: string | null; knownSubmissionIds?: string[] };
     const submission = pendingSubmission ? { ...pendingSubmission } : {};
     const slug = String(variables.questionSlug || submission.slug || location.pathname.split("/")[2] || "untitled");
     const question = await loadQuestion(slug);
-    emit("LC_ACCEPTED_SUBMISSION", {
+    const accepted = {
       ...submission, code: submission.code || editorCode(),
       questionId: String(variables.questionId || submission.questionId || question?.questionId || ""),
       title: question?.title || "",
       slug,
       description: question?.content || "",
       difficulty: question?.difficulty || "",
-      language: String(variables.lang || submission.language || "text"),
+      language: languageValue(variables.lang || submission.language || data.submissionDetails?.lang) || editorLanguage() || "text",
       submissionId: String(variables.submissionId || data.submissionDetails?.submissionId || submission.submissionId || ""),
       status: "Accepted"
-    });
+    };
+    const fingerprint = `${accepted.slug}|${languageKey(accepted.language)}|${accepted.code}`;
+    if (fingerprint === lastAcceptedFingerprint && Date.now() - lastAcceptedAt < 15000) return;
+    lastAcceptedFingerprint = fingerprint;
+    lastAcceptedAt = Date.now();
+    emit("LC_ACCEPTED_SUBMISSION", accepted);
   }
 
   async function inspectResponse(response: Response, info: SubmissionRequestInfo): Promise<void> {
@@ -237,7 +271,8 @@ type HistoryOptions = { since?: string | null; knownSubmissionIds?: string[] };
       const slug = location.pathname.split("/")[2] || "untitled";
       void loadQuestion(slug).then((question) => emit("LC_EDITOR_STATE", {
         code: editorCode(), questionId: question?.questionId || "", title: question?.title || "",
-        description: question?.content || "", difficulty: question?.difficulty || ""
+        description: question?.content || "", difficulty: question?.difficulty || "",
+        language: editorLanguage() || "text"
       }));
     }
     if (event.data.type === "LC_SYNC_HISTORY") void syncHistory(event.data.detail || {});

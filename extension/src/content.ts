@@ -10,13 +10,28 @@ type BridgeMessage = { source?: string; type?: string; detail?: BridgeDetail };
 
   const slugFromUrl = (): string => location.pathname.split("/").filter(Boolean)[1] || "untitled";
   let lastAcceptedAt = 0;
+  let lastAcceptedFingerprint = "";
+
+  const languageKey = (value: unknown): string => {
+    const language = String(value || "").trim().toLowerCase();
+    return language === "python3" ? "python" : language;
+  };
+
+  const sendAccepted = (detail: BridgeDetail): void => {
+    const fingerprint = `${detail.slug || slugFromUrl()}|${languageKey(detail.language)}|${detail.code || ""}`;
+    if (fingerprint === lastAcceptedFingerprint && Date.now() - lastAcceptedAt < 15000) return;
+    lastAcceptedFingerprint = fingerprint;
+    lastAcceptedAt = Date.now();
+    chrome.runtime.sendMessage({ type: "LC_ACCEPTED_SUBMISSION", detail: {
+      ...detail, slug: detail.slug || slugFromUrl(), source: "live"
+    }});
+  };
 
   window.addEventListener("message", (event: MessageEvent<BridgeMessage>) => {
     if (event.source !== window || event.data?.source !== SOURCE) return;
     const { type, detail = {} } = event.data;
     if (type === "LC_ACCEPTED_SUBMISSION") {
-      lastAcceptedAt = Date.now();
-      chrome.runtime.sendMessage({ type, detail: { ...detail, slug: detail.slug || slugFromUrl(), source: "live" } });
+      sendAccepted(detail);
       return;
     }
     if (["LC_HISTORY_STARTED", "LC_HISTORY_SUBMISSION", "LC_HISTORY_FINISHED", "LC_HISTORY_FAILED"].includes(type || "")) {
@@ -39,14 +54,14 @@ type BridgeMessage = { source?: string; type?: string; detail?: BridgeDetail };
     const onState = (event: MessageEvent<BridgeMessage>) => {
       if (event.source !== window || event.data?.source !== SOURCE || event.data.type !== "LC_EDITOR_STATE") return;
       window.removeEventListener("message", onState);
-      chrome.runtime.sendMessage({ type: "LC_ACCEPTED_SUBMISSION", detail: {
-        code: event.data.detail?.code || "", slug: slugFromUrl(), language: "text",
+      sendAccepted({
+        code: event.data.detail?.code || "", slug: slugFromUrl(), language: event.data.detail?.language || "text",
         questionId: event.data.detail?.questionId || "",
         title: event.data.detail?.title || "",
         description: event.data.detail?.description || "",
         difficulty: event.data.detail?.difficulty || "",
         submissionId: requestId, status: "Accepted", source: "live"
-      }});
+      });
     };
     window.addEventListener("message", onState);
     window.postMessage({ source: SOURCE, type: "LC_GET_EDITOR_STATE" }, "*");

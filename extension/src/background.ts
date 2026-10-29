@@ -24,6 +24,7 @@ type SyncIndexEntry = {
   slug: string;
   title: string;
   language: string;
+  codeHash?: string;
   status: string;
   syncedAt: string;
 };
@@ -82,6 +83,21 @@ function problemReadme(detail: SyncDetail): string {
 function languageLabel(language: string): string {
   const normalized = language.toLowerCase();
   return LANGUAGE_LABELS[normalized] || normalized.replace(/[^a-z0-9]+/g, "") || "text";
+}
+
+function normalizeLanguage(language: unknown): string {
+  const value = String(language || "").trim().toLowerCase();
+  return value || "text";
+}
+
+function contentHash(detail: SyncDetail): string {
+  const input = `${safeSegment(detail.slug)}|${languageLabel(normalizeLanguage(detail.language))}|${detail.code || ""}`;
+  let hash = 2166136261;
+  for (let index = 0; index < input.length; index += 1) {
+    hash ^= input.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `content-${(hash >>> 0).toString(16)}`;
 }
 
 function emptyIndex(): SyncIndex {
@@ -214,12 +230,17 @@ async function syncSubmission(detail: SyncDetail, writeIndex = true): Promise<Sy
     await ensureProblemReadme(config, detail);
     return { skipped: true, path: previous.path };
   }
+  const codeHash = contentHash(detail);
+  const previousByContent = Object.values(index.submissions).find((entry) => entry.codeHash === codeHash);
+  if (previousByContent || reservedCodeHashes.has(codeHash)) {
+    return { skipped: true, path: previousByContent?.path || "" };
+  }
 
   const directory = problemDirectory(detail, config);
   const listing = await githubRequest<Array<{ name?: string }>>(
     config, `/contents/${encodePath(directory)}?ref=${encodeURIComponent(config.branch)}`
   );
-  const language = String(detail.language || "text").toLowerCase();
+  const language = normalizeLanguage(detail.language);
   const label = languageLabel(language);
   const extension = EXTENSIONS[language] || "txt";
   const remoteNames = (listing || []).map((item) => `${directory}/${item.name || ""}`);
@@ -237,10 +258,12 @@ async function syncSubmission(detail: SyncDetail, writeIndex = true): Promise<Sy
   }
 
   reservedPaths.add(path);
+  reservedCodeHashes.add(codeHash);
   try {
     await putFile(config, path, detail.code, `Add accepted LeetCode solution: ${detail.slug || "problem"}`);
   } catch (error) {
     reservedPaths.delete(path);
+    reservedCodeHashes.delete(codeHash);
     throw error;
   }
   await ensureProblemReadme(config, detail);
@@ -250,6 +273,7 @@ async function syncSubmission(detail: SyncDetail, writeIndex = true): Promise<Sy
     slug: String(detail.slug || ""),
     title: problemTitle(detail),
     language,
+    codeHash,
     status: "Accepted",
     syncedAt: new Date().toISOString()
   };
@@ -276,6 +300,7 @@ let historyFailed = false;
 let historyStartedAt = "";
 let historyEntries: NewIndexEntry[] = [];
 const reservedPaths = new Set<string>();
+const reservedCodeHashes = new Set<string>();
 
 function enqueue(detail: SyncDetail, isHistory = false): void {
   syncQueue = syncQueue.then(() => syncSubmission(detail, !isHistory)).then((result) => {
