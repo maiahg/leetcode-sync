@@ -3,8 +3,24 @@ type BridgeMessage = { source?: string; type?: string; detail?: BridgeDetail };
 
 (() => {
   const SOURCE = "leetcode-github-sync";
+  const sendToBackground = (message: unknown): void => {
+    try {
+      if (!chrome.runtime?.id) return;
+      const result = chrome.runtime.sendMessage(message);
+      if (result?.catch) void result.catch(() => undefined);
+    } catch (_) {
+      // The extension may have been reloaded while this page still has the old script.
+    }
+  };
+
+  let bridgeUrl = "";
+  try {
+    bridgeUrl = chrome.runtime.getURL("dist/page-bridge.js");
+  } catch (_) {
+    return;
+  }
   const bridge = document.createElement("script");
-  bridge.src = chrome.runtime.getURL("dist/page-bridge.js");
+  bridge.src = bridgeUrl;
   bridge.onload = () => bridge.remove();
   (document.head || document.documentElement).appendChild(bridge);
 
@@ -22,7 +38,7 @@ type BridgeMessage = { source?: string; type?: string; detail?: BridgeDetail };
     if (fingerprint === lastAcceptedFingerprint && Date.now() - lastAcceptedAt < 15000) return;
     lastAcceptedFingerprint = fingerprint;
     lastAcceptedAt = Date.now();
-    chrome.runtime.sendMessage({ type: "LC_ACCEPTED_SUBMISSION", detail: {
+    sendToBackground({ type: "LC_ACCEPTED_SUBMISSION", detail: {
       ...detail, slug: detail.slug || slugFromUrl(), source: "live"
     }});
   };
@@ -35,7 +51,7 @@ type BridgeMessage = { source?: string; type?: string; detail?: BridgeDetail };
       return;
     }
     if (["LC_HISTORY_STARTED", "LC_HISTORY_SUBMISSION", "LC_HISTORY_FINISHED", "LC_HISTORY_FAILED"].includes(type || "")) {
-      chrome.runtime.sendMessage({ type, detail });
+      sendToBackground({ type, detail });
     }
   });
 

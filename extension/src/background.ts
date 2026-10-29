@@ -90,8 +90,12 @@ function normalizeLanguage(language: unknown): string {
   return value || "text";
 }
 
+function normalizeCode(code: string): string {
+  return code.replace(/\r\n/g, "\n").trimEnd();
+}
+
 function contentHash(detail: SyncDetail): string {
-  const input = `${safeSegment(detail.slug)}|${languageLabel(normalizeLanguage(detail.language))}|${detail.code || ""}`;
+  const input = `${safeSegment(detail.slug)}|${languageLabel(normalizeLanguage(detail.language))}|${normalizeCode(detail.code || "")}`;
   let hash = 2166136261;
   for (let index = 0; index < input.length; index += 1) {
     hash ^= input.charCodeAt(index);
@@ -153,8 +157,8 @@ async function getFile(config: Config, path: string): Promise<GitHubContent | nu
   return githubRequest<GitHubContent>(config, `/contents/${encodePath(path)}?ref=${encodeURIComponent(config.branch)}`);
 }
 
-async function putFile(config: Config, path: string, content: string, message: string): Promise<void> {
-  const existing = await getFile(config, path);
+async function putFile(config: Config, path: string, content: string, message: string, knownSha?: string): Promise<void> {
+  const existing = knownSha !== undefined ? { sha: knownSha } : await getFile(config, path);
   const body: { message: string; content: string; branch: string; sha?: string } = {
     message, content: encodeBase64(content), branch: config.branch
   };
@@ -177,14 +181,21 @@ async function ensureProblemReadme(config: Config, detail: SyncDetail): Promise<
 }
 
 async function loadIndex(config: Config): Promise<SyncIndex> {
+  return (await loadIndexWithFile(config)).index;
+}
+
+async function loadIndexWithFile(config: Config): Promise<{ index: SyncIndex; file: GitHubContent | null }> {
   const file = await getFile(config, INDEX_PATH);
-  if (!file?.content) return emptyIndex();
+  if (!file?.content) return { index: emptyIndex(), file };
   try {
     const parsed = JSON.parse(decodeBase64(file.content)) as Partial<SyncIndex>;
     return {
-      version: 1,
-      lastSyncAt: parsed.lastSyncAt,
-      submissions: parsed.submissions && typeof parsed.submissions === "object" ? parsed.submissions : {}
+      file,
+      index: {
+        version: 1,
+        lastSyncAt: parsed.lastSyncAt,
+        submissions: parsed.submissions && typeof parsed.submissions === "object" ? parsed.submissions : {}
+      }
     };
   } catch (error) {
     throw new Error(`Could not parse ${INDEX_PATH}: ${error instanceof Error ? error.message : String(error)}`);
@@ -198,21 +209,46 @@ async function loadConfig(): Promise<Config> {
   };
 }
 
-async function saveIndexEntries(config: Config, entries: NewIndexEntry[], lastSyncAt?: string): Promise<void> {
+async function saveIndexEntriesNow(config: Config, entries: NewIndexEntry[], lastSyncAt?: string): Promise<void> {
   if (!config.githubToken || !config.repository) throw new Error("Configure the GitHub token and repository in the extension settings.");
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const latestIndex = await loadIndex(config);
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    const latest = await loadIndexWithFile(config);
+    const latestIndex = latest.index;
     for (const item of entries) {
       if (!latestIndex.submissions[item.submissionId]) latestIndex.submissions[item.submissionId] = item.entry;
     }
-    if (lastSyncAt) latestIndex.lastSyncAt = lastSyncAt;
+    if (lastSyncAt && (!latestIndex.lastSyncAt || Date.parse(lastSyncAt) > Date.parse(latestIndex.lastSyncAt))) {
+      latestIndex.lastSyncAt = lastSyncAt;
+    }
     try {
-      await putFile(config, INDEX_PATH, `${JSON.stringify(latestIndex, null, 2)}\n`, "Update LeetCode sync index");
+      await putFile(config, INDEX_PATH, `${JSON.stringify(latestIndex, null, 2)}\n`, "Update LeetCode sync index", latest.file?.sha);
       return;
     } catch (error) {
-      if (!(error instanceof GitHubConflictError) || attempt === 2) throw error;
+      if (!(error instanceof GitHubConflictError) || attempt === 5) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 250 * 2 ** attempt));
     }
   }
+}
+
+let indexWriteQueue: Promise<void> = Promise.resolve();
+
+function saveIndexEntries(config: Config, entries: NewIndexEntry[], lastSyncAt?: string): Promise<void> {
+  const operation = indexWriteQueue.then(() => saveIndexEntriesNow(config, entries, lastSyncAt));
+  indexWriteQueue = operation.catch(() => undefined);
+  return operation;
+}
+
+async function findExistingContent(
+  config: Config, index: SyncIndex, detail: SyncDetail, directory: string, codeHash: string
+): Promise<SyncIndexEntry | undefined> {
+  for (const entry of Object.values(index.submissions)) {
+    if (entry.codeHash === codeHash) return entry;
+    if (entry.path.startsWith(`${directory}/solution-`)) {
+      const file = await getFile(config, entry.path);
+      if (file?.content && normalizeCode(decodeBase64(file.content)) === normalizeCode(detail.code || "")) return entry;
+    }
+  }
+  return undefined;
 }
 
 async function markHistorySynced(startedAt: string, entries: NewIndexEntry[]): Promise<void> {
@@ -224,6 +260,7 @@ async function syncSubmission(detail: SyncDetail, writeIndex = true): Promise<Sy
   const config = await loadConfig();
   if (!config.githubToken || !config.repository) throw new Error("Configure the GitHub token and repository in the extension settings.");
   const index = await loadIndex(config);
+  const directory = problemDirectory(detail, config);
   const submissionId = submissionKey(detail);
   const previous = index.submissions[submissionId];
   if (previous) {
@@ -231,12 +268,11 @@ async function syncSubmission(detail: SyncDetail, writeIndex = true): Promise<Sy
     return { skipped: true, path: previous.path };
   }
   const codeHash = contentHash(detail);
-  const previousByContent = Object.values(index.submissions).find((entry) => entry.codeHash === codeHash);
+  const previousByContent = await findExistingContent(config, index, detail, directory, codeHash);
   if (previousByContent || reservedCodeHashes.has(codeHash)) {
     return { skipped: true, path: previousByContent?.path || "" };
   }
 
-  const directory = problemDirectory(detail, config);
   const listing = await githubRequest<Array<{ name?: string }>>(
     config, `/contents/${encodePath(directory)}?ref=${encodeURIComponent(config.branch)}`
   );
